@@ -25,7 +25,7 @@ unsigned short currentFloor=0;// we assume the elevator starting position to be 
 char tripDxn='N';
 unsigned short OQ[10]={0};//order que containg both the pick up and drop off que
 unsigned short NOQ[10]={0};//next order que containing both the pick up and drop off que for the next round of trip
-
+unsigned short motorSpeed=0;
 
 
 void keypad_delay(void)
@@ -347,21 +347,26 @@ PWMTCR=0x09;
 PWMMCR=0x02;
 	
 }
-void motor(char dxn,short diff){
+void motor(char dxn,short error){
 	unsigned int speed[10]={0,16666,33332,49998,66664,83330,99996,116662,133328,149994};
 	IODIR1 |=1<<29;
 	
 	if(dxn=='U'){
 		IOSET1 |= 1<<29;
-		PWMMR5=speed[diff];
-	
+		PWMMR5=speed[error];
+		
 	}else if(dxn=='D'){
-		diff=diff*-1; //since diff is negative..
+		error=error*-1; //since error is negative..
 		IOCLR1 |= 1<<29;
-		PWMMR5=speed[diff];
+		PWMMR5=speed[error];
 	}else if(dxn=='N'||dxn=='S'){
 		PWMMR5=speed[0];
-	}	
+	}
+if( error==0 || dxn=='S'||dxn=='N')
+		motorSpeed=0;
+else
+		motorSpeed=1;
+
 PWMLER=1<<5;
 }
 
@@ -486,12 +491,19 @@ __irq void internalInput(void){
 		}else{ //might need other cases tooo 
 			if( (cmd>currentFloor) && (tripDxn=='U'||tripDxn=='N'))
 					OQ[cmd]=1;
-			else if( (cmd<currentFloor) && (tripDxn=='D'||tripDxn=='N'))
+			else if((cmd<currentFloor) && (tripDxn=='D'||tripDxn=='N'))
 					OQ[cmd]=1;
-			else if( (cmd>=currentFloor) && (tripDxn=='D'||tripDxn!='N'))
+			else if( (cmd>currentFloor) && (tripDxn=='D'||tripDxn!='N'))
 					NOQ[cmd]=1;//if cmd is equal the motor couldnt stop quickly
-			else if( (cmd<=currentFloor) && (tripDxn=='U'||tripDxn!='N'))
+			else if( (cmd<currentFloor) && (tripDxn=='U'||tripDxn!='N'))
 					NOQ[cmd]=1;
+			else if((cmd==currentFloor) && (motorSpeed==1))
+					NOQ[cmd]=1;
+		}
+		
+		if(motorSpeed==0 && cmd==currentFloor)
+		{
+			OQ[cmd]=1;
 		}
 	
 	EXTINT |= 1<<1; //Clear the MR0 Interrupt 
@@ -531,16 +543,28 @@ __irq void externalInput(void){
 			cedxn='D';
 		else
 			cedxn='U';
-	unsigned short floor=ecmd/10; //91/10=9 for short data type(auto casting)
-		 if( (floor>currentFloor) && (tripDxn==cedxn||tripDxn=='N'))
-					OQ[floor]=1;
-		 else if( (floor<currentFloor) && (tripDxn==cedxn||tripDxn=='N'))
-					OQ[floor]=1;
-		 else if( (floor>=currentFloor) && (tripDxn!=cedxn||tripDxn!='N'))
-					NOQ[floor]=1;
-		 else if( (floor<=currentFloor) && (tripDxn!=cedxn||tripDxn!='N'))
-					NOQ[floor]=1;
+	unsigned short cmdFloor=ecmd/10; //91/10=9 for short data type(auto casting)
+		 if( (cmdFloor>currentFloor) && (tripDxn=='U'||tripDxn=='N')) 
+						if (cedxn=='U')		
+							OQ[cmdFloor]=1;
+						else
+							NOQ[cmdFloor]=1;
+		 else if( (cmdFloor<currentFloor) && (tripDxn=='D'||tripDxn=='N'))
+						if (cedxn=='D')		
+							OQ[cmdFloor]=1;
+						else
+							NOQ[cmdFloor]=1;
+
+		 else if(motorSpeed==0 && cmdFloor==currentFloor && (tripDxn==cedxn||tripDxn=='N'))//for picking up at stationary
+					OQ[cmdFloor]=1;
+		 else if( (cmdFloor>currentFloor) && (tripDxn=='D' ||tripDxn!='N'))
+					NOQ[cmdFloor]=1;
+		 else if( (cmdFloor<currentFloor) && (tripDxn =='U' || tripDxn!='N'))
+					NOQ[cmdFloor]=1;
 		 
+		 else if(motorSpeed==1 && cmdFloor==currentFloor)
+					NOQ[cmdFloor]=1;
+		
 	
 	EXTINT = 1<<2; //Clear the MR0 Interrupt EXTINT |= 0x4; 
 	VICVectAddr =0;
@@ -593,6 +617,12 @@ void enableMotorInterrupt(){
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+unsigned short encode( unsigned short cmd){
+if (cmd==0)
+	return 11;
+else 
+	return cmd;
+}
 void copyQue(){
 	for(int i=0;i<=9;i++){
 	OQ[i]=NOQ[i];
@@ -602,18 +632,19 @@ tripDxn='N';
 }
 short nextDestination(){
 	top:
+	
 			if(tripDxn=='U'){
 				for(int i=0;i<=9;i++){
 						if(OQ[i]==1){
-								return i;
+								return encode(i);
 						}
 					}
 				copyQue();
-				goto top;//maybe put the elevator in idle mode if the loop is over some number of times
+				goto top;
 			}else if(tripDxn=='D'){
 					for(int i=9;i>=0;i--){
 						if(OQ[i]==1){
-						return i;
+						return encode(i);
 						}
 					}
 					copyQue();
@@ -623,16 +654,20 @@ short nextDestination(){
 				for(int cmd=0;cmd<=9;cmd++){
 						if(OQ[cmd]==1){
 						temp=cmd-currentFloor;
+							if(temp==0 && motorSpeed ==0)
+								return encode(cmd);
 							if(temp>0){
 								tripDxn='U';
 								goto top;
 							}
-							else if(temp<=0){
+							else if(temp<0){
 								tripDxn='D';
 								goto top;
 							}
 						}
 					}
+				copyQue();
+				goto top;
 			}
 	return 0;//if in case all of the above coditions and stuff didnt workout 
 }
@@ -642,11 +677,15 @@ short nextDestination(){
 void elevatorTravel(){
 		
 	short next= nextDestination();
-	
+	if (next==11)
+		next=0; 
+		
 				while((next-currentFloor)!=0){//while((toFloor-currentFloor)!=0)i
 						motor(tripDxn,(next-currentFloor));
 						display(currentFloor);
 						next=nextDestination();
+						if (next==11)
+							next=0; 
 				}
 				display(currentFloor);
 				motor('S',0);
@@ -663,6 +702,12 @@ int main(){
 			
 			IOCLR1 |= OSEL;	//to close the outer button from connecting to the LPC2148
 			IOCLR1 |= ISEL;	//to close the inner button from connecting to the LPC2148
+	
+			IO1DIR |=1<<30;
+			IODIR1 |=1<<31;//to config the door motor
+
+			IOCLR1 |=1<<31;
+			IOCLR1 |=1<<30;
 	//To configure the motor to some specific position during the start
 	IODIR0 |=1<<21;
 	IOSET0 |=1<<21;
@@ -675,16 +720,14 @@ int main(){
 	enableMotorInterrupt();
 
 	PWM_init();
-	
+	display(currentFloor); //to display zero at the begining
 	while(1){
-		
+	
 		while(nextDestination())
 		{
 				elevatorTravel();
+				
 		}
-		//motor('D',-currentFloor);//to make it go to the ground floor and stop it there with the door open 
-		
-	
 	}	
 
 }
